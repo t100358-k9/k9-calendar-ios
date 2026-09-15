@@ -1,0 +1,16 @@
+{
+  "name": "k9-calendar-ios-test",
+  "version": "1.0.0",
+  "private": true,
+  "description": "K9 Calendar iOS test app built with Capacitor",
+  "scripts": {
+    "sync:ios": "npx cap sync ios"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.0.0",
+    "@capacitor/ios": "^8.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.0.0"
+  }
+}
