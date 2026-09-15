@@ -1,0 +1,3303 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+   <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+<script src="js/k9-db-bridge.js"></script>
+
+<script>
+
+/* ================= K9 Database V1 ================= */
+const K9DB = (() => {
+  const KEY = "K9_DATABASE_V1";
+  const LEGACY_CALENDAR_KEY = "K9_OFFICIAL_STATION_DB_V4";
+  const LEGACY_SHIFT_KEY = "K9_SHIFT_DATA";
+  const VERSION = 1;
+  const nowISO = () => new Date().toISOString();
+
+  function parse(v, fallback) {
+    try { const x = JSON.parse(v); return x ?? fallback; }
+    catch(e) { return fallback; }
+  }
+
+  function emptyDB() {
+    const now = nowISO();
+    return {
+      schemaVersion: VERSION,
+      databaseVersion: "1.0.0",
+      createdAt: now,
+      updatedAt: now,
+      dogs: [],
+      handlers: [],
+      calendarRecords: [],
+      trainingRecords: [],
+      odorRecords: [],
+      healthRecords: [],
+      reminders: [],
+      settings: {}
+    };
+  }
+
+  let db = null;
+
+  function normalize(x) {
+    const b = emptyDB();
+    const s = (x && typeof x === "object") ? x : {};
+    return {
+      ...b, ...s,
+      schemaVersion: VERSION,
+      dogs: Array.isArray(s.dogs) ? s.dogs : [],
+      handlers: Array.isArray(s.handlers) ? s.handlers : [],
+      calendarRecords: Array.isArray(s.calendarRecords) ? s.calendarRecords : [],
+      trainingRecords: Array.isArray(s.trainingRecords) ? s.trainingRecords : [],
+      odorRecords: Array.isArray(s.odorRecords) ? s.odorRecords : [],
+      healthRecords: Array.isArray(s.healthRecords) ? s.healthRecords : [],
+      reminders: Array.isArray(s.reminders) ? s.reminders : [],
+      settings: (s.settings && typeof s.settings === "object") ? s.settings : {}
+    };
+  }
+
+  function save() {
+    db.updatedAt = nowISO();
+    localStorage.setItem(KEY, JSON.stringify(db));
+  }
+
+  function init() {
+    const existing = localStorage.getItem(KEY);
+
+    if (existing) {
+      db = normalize(parse(existing, emptyDB()));
+      save();
+      return db;
+    }
+
+    db = emptyDB();
+
+    // 非破壞式遷移：只複製舊資料，不刪除舊資料。
+    const legacyCalendar = parse(
+      localStorage.getItem(LEGACY_CALENDAR_KEY) || "[]", []
+    );
+
+    if (Array.isArray(legacyCalendar)) {
+      db.calendarRecords = legacyCalendar.map((a, i) => ({
+        id: "CAL-MIGRATED-" + Date.now() + "-" + i,
+        date: a && a.date ? a.date : "",
+        data: a && Array.isArray(a.data) ? a.data : [],
+        source: "legacy-v4",
+        migratedAt: nowISO()
+      }));
+    }
+
+    const legacyShift = parse(
+      localStorage.getItem(LEGACY_SHIFT_KEY) || "{}", {}
+    );
+
+    if (legacyShift && typeof legacyShift === "object") {
+      db.settings.calendarShiftData = legacyShift;
+    }
+
+    db.settings.legacyCalendarMigrated = true;
+    db.settings.legacyShiftMigrated = true;
+    save();
+    return db;
+  }
+
+  function ensure() {
+    if (!db) init();
+    return db;
+  }
+
+  function makeId(prefix) {
+    return prefix + "-" + Date.now() + "-" +
+      Math.random().toString(36).slice(2, 8);
+  }
+
+  const calendar = {
+    getAll() {
+      return ensure().calendarRecords;
+    },
+
+    // 保持目前 Calendar 使用的 archive 結構：[{date, data:[...]}]
+    getArchives() {
+      return ensure().calendarRecords.map(r => ({
+        date: r.date || "",
+        data: Array.isArray(r.data) ? r.data : []
+      }));
+    },
+
+    get(id) {
+      return ensure().calendarRecords.find(r => r.id === id) || null;
+    },
+
+    save(record) {
+      ensure();
+
+      const r = {
+        id: record && record.id ? record.id : makeId("CAL"),
+        date: record && record.date ? record.date : "",
+        data: record && Array.isArray(record.data) ? record.data : [],
+        source: record && record.source ? record.source : "k9db",
+        updatedAt: nowISO()
+      };
+
+      const i = db.calendarRecords.findIndex(x => x.id === r.id);
+
+      if (i >= 0) {
+        db.calendarRecords[i] = { ...db.calendarRecords[i], ...r };
+      } else {
+        db.calendarRecords.push(r);
+      }
+
+      save();
+      return r;
+    },
+
+    remove(id) {
+      ensure();
+      db.calendarRecords = db.calendarRecords.filter(r => r.id !== id);
+      save();
+    }
+  };
+
+  const settings = {
+    get(key, fallback = null) {
+      const v = ensure().settings[key];
+      return v === undefined ? fallback : v;
+    },
+
+    set(key, value) {
+      ensure().settings[key] = value;
+      save();
+      return value;
+    }
+  };
+
+  return {
+    KEY,
+    VERSION,
+    init,
+    calendar,
+    settings,
+    dogs: {
+      getAll() { return ensure().dogs; }
+    },
+    handlers: {
+      getAll() { return ensure().handlers; }
+    },
+    training: {
+      getAll() { return ensure().trainingRecords; }
+    },
+    odor: {
+      getAll() { return ensure().odorRecords; }
+    },
+    health: {
+      getAll() { return ensure().healthRecords; }
+    },
+    reminders: {
+      getAll() { return ensure().reminders; }
+    }
+  };
+})();
+
+K9DB.init();
+
+</script>
+      <title>K9 Calendar Pro</title>
+      <!-- Multi-video support: videos[] + legacy video compatibility -->
+      <style>
+         *{
+         margin:0;
+         padding:0;
+         box-sizing:border-box;
+         }
+         body{
+         font-family:-apple-system,BlinkMacSystemFont,"Segoe UI";
+         background:#f8fafc;
+         height:100vh;
+         overflow:hidden;
+         }
+         .container{
+         display:grid;
+         grid-template-columns:20% 60% 20%;
+         height:100vh;
+         min-width:0;
+         }
+         /* =========================
+         三區版面
+         左 20%：縮小月曆
+         中 60%：完整月曆格子
+         右 20%：當日每回合紀錄
+         ========================= */
+         .calendar-panel{
+         display:contents;
+         }
+         .mini-calendar-panel{
+         grid-column:1;
+         width:auto;
+         min-width:0;
+         flex:none;
+         margin:16px 8px 16px 16px;
+         padding:18px 14px;
+         background:#f8fafc;
+         border-radius:20px;
+         border-right:1px solid #eef2f7;
+         box-shadow:0 6px 18px rgba(15,23,42,.06);
+         overflow-y:auto;
+         overflow-x:hidden;
+         }
+         .main-calendar-panel{
+         grid-column:2;
+         width:auto;
+         flex:none;
+         min-width:0;
+         margin:16px 8px;
+         background:#f8fafc;
+         border-radius:20px;
+         box-shadow:0 6px 18px rgba(15,23,42,.06);
+         display:flex;
+         flex-direction:column;
+         overflow:hidden;
+         }.mini-calendar-head{
+         display:flex;
+         align-items:center;
+         justify-content:space-between;
+         gap:6px;
+         margin-bottom:12px;
+         }
+         .mini-calendar-title{
+         font-size:15px;
+         font-weight:700;
+         color:#334155;
+         letter-spacing:.2px;
+         white-space:nowrap;
+         }
+         .mini-nav{
+         border:none;
+         background:transparent;
+         color:#94a3b8;
+         width:24px;
+         height:24px;
+         border-radius:7px;
+         cursor:pointer;
+         font-size:13px;
+         }
+         .mini-nav:hover{
+         background:#f1f5f9;
+         color:#475569;
+         }
+         .mini-weekdays{
+         display:grid;
+         grid-template-columns:repeat(7,1fr);
+         text-align:center;
+         color:#64748b;
+         font-size:11px;
+         font-weight:700;
+         margin-bottom:5px;
+         }
+         .mini-grid{
+         display:grid;
+         grid-template-columns:repeat(7,1fr);
+         gap:3px 1px;
+         }
+.mini-day{
+    position:relative;
+    width:27px;
+    height:27px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    justify-self:center;
+    align-self:center;
+    border-radius:50%;
+    color:#475569;
+    font-size:13px;
+    cursor:pointer;
+}
+         .mini-day:hover{
+         background:#f1f5f9;
+         }
+         .mini-day.muted{
+         color:#cbd5e1;
+         cursor:default;
+         }
+         .mini-day.today{
+         width:27px;
+         height:27px;
+         justify-self:center;
+         align-self:center;
+         border-radius:50%;
+         background:#ef4444;
+         color:#fff !important;
+         font-weight:800;
+         box-shadow:0 2px 6px rgba(239,68,68,.30);
+         }
+         .mini-day.today:hover{
+         background:#dc2626;
+         color:#fff !important;
+         }
+
+.mini-day.selected:not(.today){
+    width:27px;
+    height:27px;
+    justify-self:center;
+    align-self:center;
+    border-radius:50%;
+    box-shadow:inset 0 0 0 1.5px #94a3b8;
+    font-weight:700;
+}
+         /* LSR：正圓、填滿藍色、白色日期文字 */
+         .mini-day.lsr{
+         width:27px;
+         height:27px;
+         justify-self:center;
+         align-self:center;
+         border-radius:50%;
+         background:#3b82f6;
+         color:#fff !important;
+         font-weight:700;
+         box-shadow:0 2px 5px rgba(59,130,246,.25);
+         }
+         .mini-day.lsr:hover{
+         background:#2563eb;
+         color:#fff !important;
+         }
+         /* LSR 優先於今日標記：有 LSR 時維持藍色圓形 */
+         .mini-day.lsr.today{
+         background:#3b82f6;
+         color:#fff !important;
+         box-shadow:0 0 0 2px #fff,0 2px 6px rgba(59,130,246,.3);
+         }
+         .mini-day.lsr.selected,
+         .mini-day.lsr.selected:not(.today){
+         background:#3b82f6;
+         color:#fff !important;
+         box-shadow:inset 0 0 0 2px #1d4ed8,0 2px 5px rgba(59,130,246,.25);
+         }
+
+         /* =========================
+            左區：本月勤務 / 嗅源統計
+            依附件 UI 重新設計，適配 20% 欄寬
+            ========================= */
+         .mini-month-summary{
+            width:100%;
+            margin-top:14px;
+         }
+
+         .mini-month-summary .stats-card{
+            width:100%;
+            box-sizing:border-box;
+            background:#fff;
+            border:1px solid #e5e7eb;
+            border-radius:16px;
+            padding:12px;
+            margin:0 0 10px 0;
+            box-shadow:0 3px 10px rgba(15,23,42,.05);
+         }
+
+         .mini-month-summary .stats-card:last-child{
+            margin-bottom:0;
+         }
+
+         .mini-month-summary .stats-card-head{
+            display:flex;
+            justify-content:space-between;
+            align-items:flex-start;
+            gap:8px;
+            margin-bottom:10px;
+         }
+
+         .mini-month-summary .stats-card-title{
+            color:#111827;
+            font-size:14px;
+            font-weight:700;
+            line-height:1.45;
+         }
+
+         .mini-month-summary .stats-card-subtitle{
+           
+            font-size:14px;
+            font-weight:400;
+            margin-top:2px;
+         }
+
+         .mini-month-summary .stats-total{
+            flex:0 0 auto;
+            min-width:42px;
+            padding:5px 7px 6px;
+            border-radius:11px;
+            background:#eef2ff;
+            text-align:center;
+         }
+
+         .mini-month-summary .stats-total-label{
+            color:#64748b;
+            font-size:14px;
+            line-height:1;
+            letter-spacing:.4px;
+         }
+
+         .mini-month-summary .stats-total-number{
+            color:#4f46e5;
+            font-size:23px;
+            line-height:1.1;
+            font-weight:700;
+            margin-top:2px;
+         }
+
+         .mini-month-summary .score-grid{
+            display:grid;
+            grid-template-columns:repeat(5,minmax(0,1fr));
+            gap:4px;
+            margin-top:2px;
+         }
+
+         .mini-month-summary .score-stat{
+            min-width:0;
+            background:#f8fafc;
+            border:1px solid #e5e7eb;
+            border-radius:10px;
+            padding:7px 3px 6px;
+            text-align:center;
+         }
+
+         .mini-month-summary .score-stat-number{
+            color:#1e293b;
+            font-size:20px;
+            line-height:1;
+            font-weight:700;
+         }
+
+         .mini-month-summary .score-stat-label{
+            margin-top:5px;
+            font-size:14px;
+            line-height:1;
+            font-weight:600;
+         }
+
+         .mini-month-summary .score-stat-rate{
+            margin-top:7px;
+
+            font-size:14px;
+            line-height:1;
+         }
+
+         .mini-month-summary .stat-progress{
+            height:10px;
+            margin-top:6px;
+            border-radius:999px;
+            background:#f1f5f9;
+            overflow:hidden;
+         }
+
+         .mini-month-summary .stat-progress > span{
+            display:block;
+            height:100%;
+            min-width:0;
+            border-radius:999px;
+         }
+
+         .mini-month-summary .score-g .score-stat-label{color:#16a34a;}
+         .mini-month-summary .score-f .score-stat-label{color:#2563eb;}
+         .mini-month-summary .score-p .score-stat-label{color:#f59e0b;}
+         .mini-month-summary .score-fr .score-stat-label{color:#e11d48;}
+         .mini-month-summary .score-dnf .score-stat-label{color:#64748b;}
+
+         .mini-month-summary .score-g .stat-progress > span{background:#16a34a;}
+         .mini-month-summary .score-f .stat-progress > span{background:#2563eb;}
+         .mini-month-summary .score-p .stat-progress > span{background:#f59e0b;}
+         .mini-month-summary .score-fr .stat-progress > span{background:#e11d48;}
+         .mini-month-summary .score-dnf .stat-progress > span{background:#94a3b8;}
+
+         .mini-month-summary .scent-rate{
+   
+            font-size:14px;
+            font-weight:600;
+            white-space:nowrap;
+         }
+
+         .mini-month-summary .scent-grid{
+            display:grid;
+            grid-template-columns:repeat(2,minmax(0,1fr));
+            gap:6px;
+         }
+
+         .mini-month-summary .scent-stat{
+            min-width:0;
+            background:#f8fafc;
+            border:1px solid #e5e7eb;
+            border-radius:10px;
+            padding:7px 8px 6px;
+         }
+
+         .mini-month-summary .scent-top{
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            gap:5px;
+         }
+
+         .mini-month-summary .scent-name{
+
+            font-size:14px;
+            font-weight:600;
+         }
+
+         .mini-month-summary .scent-number{
+            color:#1e293b;
+            font-size:16px;
+            font-weight:700;
+            line-height:1;
+         }
+
+         .mini-month-summary .scent-progress{
+            height:4px;
+            margin-top:6px;
+            border-radius:999px;
+            background:#fff;
+            overflow:hidden;
+         }
+
+         .mini-month-summary .scent-progress > span{
+            display:block;
+            height:100%;
+            border-radius:999px;
+            background:#10b981;
+         }
+
+         /* =========================
+            左區：Area Reward Ratio
+            UI 與上方 Scent 統計一致
+            ========================= */
+         .area-reward-ratio{
+            width:100%;
+            margin-top:12px;
+         }
+
+         .area-reward-ratio-card{
+            width:100%;
+            box-sizing:border-box;
+            background:#fff;
+            border:1px solid #e5e7eb;
+            border-radius:16px;
+            padding:12px;
+            margin:0 0 10px 0;
+            box-shadow:0 3px 10px rgba(15,23,42,.05);
+         }
+
+         .area-reward-ratio-head{
+            display:flex;
+            justify-content:space-between;
+            align-items:flex-start;
+            gap:8px;
+            margin-bottom:10px;
+         }
+
+         .area-reward-ratio-title-wrap{
+            min-width:0;
+         }
+
+         .area-reward-ratio-title{
+            color:#111827;
+            font-size:14px;
+            font-weight:700;
+            line-height:1.45;
+         }
+
+         .area-reward-ratio-subtitle{
+            color:#111827;
+            font-size:14px;
+            font-weight:400;
+            margin-top:2px;
+            line-height:1.45;
+         }
+
+         .area-reward-ratio-rate{
+            flex:0 0 auto;
+            color:#111827;
+            font-size:14px;
+            font-weight:600;
+            line-height:1.45;
+            white-space:nowrap;
+         }
+
+         .area-reward-grid{
+            display:grid;
+            grid-template-columns:1fr;
+            gap:6px;
+         }
+
+         .area-reward-stat{
+            position:relative;
+            min-width:0;
+            background:#f8fafc;
+            border:1px solid #e5e7eb;
+            border-radius:10px;
+            padding:8px 9px 7px;
+            overflow:hidden;
+         }
+
+         .area-reward-stat.airport{
+            border-top:3px solid #ff4d4f;
+         }
+
+         .area-reward-stat.cargo{
+            border-top:3px solid #1677ff;
+         }
+
+         .area-reward-stat.post{
+            border-top:3px solid #52c41a;
+         }
+
+         .area-reward-stat-top{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:6px;
+         }
+
+         .area-reward-stat-name{
+            display:flex;
+            align-items:center;
+            gap:5px;
+            min-width:0;
+            color:#111827;
+            font-size:14px;
+            font-weight:600;
+            line-height:1.2;
+         }
+
+         .area-reward-stat-icon{
+            font-size:15px;
+            line-height:1;
+            flex:0 0 auto;
+         }
+
+         .area-reward-stat-number{
+            color:#4f46e5;
+            font-size:24px;
+            line-height:1;
+            font-weight:500;
+         }
+
+         .area-reward-stat-meta{
+            margin-top:6px;
+           
+            font-size:14px;
+            line-height:1.3;
+            white-space:nowrap;
+         }
+
+         .area-reward-stat-meta strong{
+            color:#1e293b;
+            font-weight:600;
+         }
+
+         .area-reward-progress{
+            height:4px;
+            margin-top:6px;
+            border-radius:999px;
+            background:#fff;
+            overflow:hidden;
+         }
+
+         .area-reward-progress > span{
+            display:block;
+            height:100%;
+            border-radius:999px;
+         }
+
+         .area-reward-stat.airport .area-reward-progress > span{
+            background:#ff4d4f;
+         }
+
+         .area-reward-stat.cargo .area-reward-progress > span{
+            background:#1677ff;
+         }
+
+         .area-reward-stat.post .area-reward-progress > span{
+            background:#52c41a;
+         }
+
+         @media (max-width:1200px){
+            .area-reward-ratio-card{
+               padding:10px;
+            }
+
+            .area-reward-ratio-title,
+            .area-reward-ratio-subtitle,
+            .area-reward-ratio-rate{
+               font-size:13px;
+            }
+
+            .area-reward-stat{
+               padding:7px 8px 6px;
+            }
+
+            .area-reward-stat-name{
+               font-size:13px;
+            }
+
+            .area-reward-stat-number{
+               font-size:23px;
+            }
+
+            .area-reward-stat-meta{
+               font-size:10px;
+            }
+         }
+
+
+
+         @media (max-width:1200px){
+            .mini-month-summary .score-grid{
+               grid-template-columns:repeat(5,minmax(0,1fr));
+               gap:3px;
+            }
+            .mini-month-summary .score-stat{
+               padding-left:2px;
+               padding-right:2px;
+            }
+            .mini-month-summary .score-stat-number{
+               font-size:18px;
+            }
+         }
+
+         .header{
+         padding:20px;
+         display:flex;
+         flex-direction:column;
+         align-items:center;
+         gap:12px;
+         border-bottom:1px solid #eee;
+         }
+         .header-top{
+         width:100%;
+         display:flex;
+         justify-content:center;
+         align-items:center;
+         gap:20px;
+         }
+         .month-title{
+         font-size:28px;
+         font-weight:700;
+         min-width:220px;
+         text-align:center;
+         letter-spacing:.5px;
+         }
+         #shiftSummary{
+         display:flex;
+         justify-content:center;
+         gap:12px;
+         flex-wrap:wrap;
+         }
+         .shift-stat{
+         background:white;
+         border:1px solid #e2e8f0;
+         border-radius:12px;
+         padding:6px 12px;
+         font-size:13px;
+         font-weight:600;
+         box-shadow:0 1px 3px rgba(0,0,0,.05);
+         }
+
+         /* =========================
+            工作獎賞比
+            總次數 / (真品＋非真品)
+            放在月曆上方 DNF / FR 圖示右側
+            ========================= */
+         .work-reward-stat{
+            min-width:190px;
+            padding:7px 12px;
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:14px;
+            text-align:left;
+         }
+
+         .work-reward-info{
+            min-width:0;
+         }
+
+         .work-reward-title{
+            color:#334155;
+            font-size:13px;
+            font-weight:700;
+            line-height:1.25;
+            white-space:nowrap;
+         }
+
+         .work-reward-subtitle{
+            
+            font-size:10px;
+            font-weight:400;
+            line-height:1.35;
+            margin-top:2px;
+            white-space:nowrap;
+         }
+
+         .work-reward-value{
+            flex:0 0 auto;
+            color:#4f46e5;
+            font-size:28px;
+            line-height:1;
+            font-weight:500;
+            letter-spacing:.2px;
+         }
+         /* =========================
+         Calendar Notice Badge
+         ========================= */
+         .notice-badge{
+         display:inline-flex;
+         align-items:center;
+         padding:8px 16px;
+         border-radius:999px;
+         font-size:13px;
+         font-weight:600;
+         backdrop-filter:blur(12px);
+         box-shadow:0 4px 10px rgba(0,0,0,.06);
+         }
+         .notice-success{
+         background:#ecfdf5;
+         color:#047857;
+         border:1px solid #a7f3d0;
+         }
+         .notice-empty{
+         background:#fef2f2;
+         color:#dc2626;
+         border:1px solid #fecaca;
+         }
+         .nav-btn{
+         border:none;
+         background:#f3f4f6;
+         width:36px;
+         height:36px;
+         border-radius:10px;
+         cursor:pointer;
+         }
+         .weekdays{
+         display:grid;
+         grid-template-columns:repeat(7,1fr);
+         padding:10px;
+         font-weight:600;
+     
+         text-align:center;
+         }
+         .calendar-grid{
+         flex:1;
+         display:grid;
+         grid-template-columns:repeat(7,1fr);
+         grid-template-rows:repeat(6,minmax(0,1fr));
+         gap:4px;
+         padding:8px;
+         min-height:0;
+         }
+.day{
+    background:white;
+    border:1px solid #eee;
+    border-radius:12px;
+    padding:6px;
+    cursor:pointer;
+    overflow:hidden;
+    position:relative;
+
+    transition:
+        transform .2s ease,
+        box-shadow .2s ease,
+        border-color .2s ease,
+        background .2s ease;
+}
+.day:hover{
+    background:#ffffff;
+    transform:translateY(-3px);
+    box-shadow:0 8px 20px rgba(15,23,42,.14);
+    border-color:#dbe3ec;
+    z-index:5;
+}
+         .shift-d{
+         background:#fefce8 !important;
+         }
+         .shift-dm{
+         background:#f1f5f9 !important;
+         }
+         .shift-off{
+         background:white !important;
+         }
+         .shift-tag{
+         font-size:10px;
+         font-weight:700;
+         float:right;
+         color:#64748b;
+         }
+         .day-number{
+         display:flex;
+         justify-content:space-between;
+         align-items:center;
+         margin-bottom:6px;
+         font-weight:700;
+         }
+.today-number{
+    width:28px;
+    height:28px;
+    border-radius:50%;
+    background:#ef4444;
+    color:white;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-weight:700;
+    font-size:15px;
+    box-shadow:0 3px 8px rgba(239,68,68,.35);
+    animation:todayBreath 2.8s ease-in-out infinite;
+}
+         /* =========================
+         月曆 event bar
+         ========================= */
+         .event-bar{
+         font-size:12px;
+         margin-bottom:2px;
+         padding-left:6px;
+         border-left:4px solid;
+         white-space:nowrap;
+         overflow:hidden;
+         text-overflow:ellipsis;
+         border-radius:4px;
+         }
+         .event-red{
+         border-left-color:#ff4d4f;
+         background:rgba(255,77,79,0.08);
+         }
+         .event-blue{
+         border-left-color:#1677ff;
+         background:rgba(22,119,255,0.08);
+         }
+         .event-green{
+         border-left-color:#52c41a;
+         background:rgba(82,196,26,0.08);
+         }
+         .event-gray{
+         border-left-color:#bfbfbf;
+         background:rgba(191,191,191,0.08);
+         }
+         /* =========================
+         RIGHT
+         ========================= */
+.detail-panel{
+    grid-column:3;
+    width:auto;
+    min-width:0;
+    overflow:auto;
+    margin:16px 16px 16px 8px;
+
+    padding:20px;
+
+    background:#f8fafc;
+    border-radius:20px;
+    box-shadow:0 6px 18px rgba(15,23,42,.06);
+}
+         .detail-title{
+         font-size:24px;
+         font-weight:700;
+         margin-bottom:20px;
+         letter-spacing:.2px;
+         color:#111827;
+         }
+.timeline-shift{
+    display:inline-flex;
+    align-items:center;
+    padding:4px 9px;
+    border-radius:999px;
+    background:#f8fafc;
+    border:1px solid #e5e7eb;
+    color:#475569;
+    font-size:16px;
+    font-weight:400;
+}
+         /* =========================
+            RIGHT：當日勤務「時序圖」UI
+            以時間 → 節點 → 事件卡片呈現
+            ========================= */
+         /* =========================
+            當日執勤地點分類統計
+            UI：外層大白框 + 班別 / 筆勤務 + 五個地點卡片
+            ========================= */
+         .daily-location-summary{
+            width:100%;
+            margin:-4px 0 14px;
+            padding:14px 12px 12px;
+            background:#ffffff;
+            border:1px solid #e5eaf1;
+            border-radius:18px;
+            box-shadow:0 3px 10px rgba(15,23,42,.045);
+         }
+
+         .daily-location-summary-head{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:6px;
+            margin-bottom:10px;
+         }
+
+         .daily-location-shift{
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            min-width:54px;
+            height:32px;
+            padding:0 12px;
+            border:1px solid #e3e8ef;
+            border-radius:999px;
+            background:#f8fafc;
+            color:#334155;
+            font-size:14px;
+            font-weight:400;
+            line-height:1;
+            white-space:nowrap;
+         }
+
+         .daily-location-total{
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            min-width:92px;
+            height:32px;
+            padding:0 12px;
+            border:1px solid #e3e8ef;
+            border-radius:999px;
+            background:#f8fafc;
+            color:#4f46e5;
+            font-size:14px;
+            font-weight:400;
+            line-height:1;
+            white-space:nowrap;
+         }
+
+         .daily-location-grid{
+            display:grid;
+            grid-template-columns:repeat(5,minmax(0,1fr));
+            gap:5px;
+         }
+
+         .daily-location-stat{
+            min-width:0;
+            min-height:86px;
+            display:flex;
+            flex-direction:column;
+            align-items:center;
+            justify-content:space-between;
+            padding:10px 3px 9px;
+    background:#f8fafc;
+            border:1px solid #e3e8ef;
+            border-radius:12px;
+            text-align:center;
+         }
+
+         .daily-location-stat-title{
+            width:100%;
+            min-height:34px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            color:#111827;
+            font-size:13px;
+            font-weight:400;
+            line-height:1.25;
+            white-space:normal;
+            overflow:visible;
+         }
+
+         .daily-location-stat-number{
+            color:#111827;
+            font-size:25px;
+            font-weight:700;
+            line-height:1;
+         }
+
+         @media (max-width:1100px){
+            .daily-location-summary{
+               padding:11px 8px 9px;
+               border-radius:15px;
+            }
+            .daily-location-summary-head{margin-bottom:8px;}
+            .daily-location-shift{
+               min-width:48px;
+               height:29px;
+               padding:0 9px;
+               font-size:14px;
+            }
+            .daily-location-total{
+               min-width:82px;
+               height:29px;
+               padding:0 9px;
+               font-size:12px;
+            }
+            .daily-location-grid{gap:3px;}
+            .daily-location-stat{
+
+               min-height:76px;
+               padding:8px 2px 7px;
+               border-radius:10px;
+            }
+            .daily-location-stat-title{font-size:10px;}
+            .daily-location-stat-number{font-size:21px;}
+         }
+         .timeline-wrap{
+            display:flex;
+            flex-direction:column;
+            min-height:0;
+            height:calc(100% - 52px);
+         }
+
+         .timeline-summary{
+            display:flex;
+            align-items:center;
+            justify-content:space-between;
+            gap:8px;
+            margin:-10px 0 14px;
+ 
+            font-size:16px;
+         }
+
+         .timeline-count{
+            padding:4px 9px;
+            border-radius:999px;
+            background:#f8fafc;
+            border:1px solid #e5e7eb;
+            color:#475569;
+            font-weight:400;
+         }
+
+         .timeline{
+            position:relative;
+            flex:1;
+            min-height:0;
+            overflow-y:auto;
+            overflow-x:hidden;
+            padding:4px 2px 18px 0;
+            scrollbar-width:thin;
+         }
+
+         /* 時序主線 */
+         .timeline::before{
+            content:"";
+            position:absolute;
+            left:56px;
+            top:12px;
+            bottom:24px;
+            width:2px;
+            background:#e5e7eb;
+            border-radius:999px;
+         }
+
+         .timeline-item{
+            position:relative;
+            display:grid;
+            grid-template-columns:44px 24px minmax(0,1fr);
+            column-gap:0;
+            margin-bottom:10px;
+            min-width:0;
+         }
+
+         .timeline-time{
+            padding-top:4px;
+            padding-right:5px;
+            text-align:right;
+            font-size:16px;
+            line-height:1.2;
+            font-weight:700;
+            color:#334155;
+            white-space:nowrap;
+         }
+
+         .timeline-node-col{
+            position:relative;
+            min-height:80px;
+         }
+
+         .timeline-node{
+            position:absolute;
+            z-index:2;
+            left:6px;
+            top:7px;
+            width:12px;
+            height:12px;
+            border-radius:50%;
+            background:#64748b;
+            border:3px solid #fff;
+            box-shadow:0 0 0 2px #cbd5e1;
+         }
+
+         .timeline-node.score-g{
+            background:#22c55e;
+            box-shadow:0 0 0 2px #bbf7d0;
+         }
+
+         .timeline-node.score-f{
+            background:#3b82f6;
+            box-shadow:0 0 0 2px #bfdbfe;
+         }
+
+         .timeline-node.score-p{
+            background:#f59e0b;
+            box-shadow:0 0 0 2px #fde68a;
+         }
+
+         .timeline-node.score-fr{
+            background:#ef4444;
+            box-shadow:0 0 0 2px #fecaca;
+         }
+
+         .timeline-node.score-dnf{
+            background:#7f1d1d;
+            box-shadow:0 0 0 2px #fecaca;
+         }
+
+         .timeline-card{
+            min-width:0;
+            padding:10px 11px;
+            border:1px solid #e5e7eb;
+            border-radius:12px;
+            box-shadow:0 3px 10px rgba(15,23,42,.045);
+            cursor:pointer;
+            transition:transform .18s ease, box-shadow .18s ease;
+         }
+
+         .timeline-card:hover{
+            transform:translateY(-1px);
+            box-shadow:0 6px 16px rgba(15,23,42,.08);
+         }
+
+         .timeline-card.shift-record-d{
+            background:#fefce8;
+            border-color:#f3eed2;
+         }
+
+         .timeline-card.shift-record-dm{
+            background:#f1f5f9;
+            border-color:#e2e8f0;
+         }
+
+         .timeline-card.shift-record-off{
+            background:#fff;
+         }
+
+         .timeline-card-top{
+            display:flex;
+            align-items:center;
+            justify-content:flex-start;
+            min-height:28px;
+            margin-bottom:2px;
+         }
+
+         /* Timeline 評比顏色完全沿用「當月表現評比」 */
+         .timeline-card-top .score-badge{
+            min-width:34px;
+            height:23px;
+            padding:0 8px;
+            font-size:11px;
+            box-shadow:none;
+         }
+
+         .timeline-dog{
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            min-width:30px;
+            height:23px;
+            padding:0 8px;
+            border-radius:999px;
+            color:#fff;
+            font-size:11px;
+            font-weight:800;
+            letter-spacing:.2px;
+         }
+
+         .timeline-dog.dog-f{ background:#3b82f6; }
+         .timeline-dog.dog-g{ background:#22c55e; }
+         .timeline-dog.dog-p{ background:#f59e0b; }
+         .timeline-dog.dog-fr{ background:#ef4444; }
+         .timeline-dog.dog-dnf{ background:#7f1d1d; }
+         .timeline-dog.dog-none{ background:#94a3b8; }
+
+         .timeline-location{
+            margin-top:7px;
+            color:#111827;
+            font-size:14px;
+            line-height:1.4;
+            white-space:normal;
+            overflow-wrap:anywhere;
+         }
+
+         .timeline-mode{
+            margin-top:5px;
+           
+            font-size:14px;
+            line-height:1.35;
+            white-space:normal;
+            overflow-wrap:anywhere;
+         }
+
+         .timeline-gap{
+            grid-column:3;
+            margin:-3px 0 7px;
+            padding-left:2px;
+            
+            font-size:12px;
+            line-height:1.2;
+         }
+
+         .timeline-empty{
+            padding:45px 10px;
+            text-align:center;
+            color:#94a3b8;
+            font-size:13px;
+            line-height:1.7;
+         }
+
+         @media (max-width:1100px){
+            .timeline{
+               padding-right:0;
+            }
+            .timeline::before{
+               left:52px;
+            }
+            .timeline-item{
+               grid-template-columns:40px 24px minmax(0,1fr);
+            }
+            .timeline-location{
+               font-size:13px;
+            }
+         }
+
+         .card{
+         background:white;
+         border-radius:16px;
+         padding:15px;
+         margin-bottom:12px;
+         box-shadow:0 4px 12px rgba(0,0,0,.05);
+         cursor:pointer;
+         transition:.2s;
+         }
+         .card:hover{
+         transform:translateY(-2px);
+         }
+
+         /* =========================
+            勤務紀錄卡片：自動跟隨當日班別
+            D  → 淡黃色
+            DM → 灰色
+            OFF → 白色
+            ========================= */
+         .card.shift-record-d{
+         background:#fefce8;
+         }
+
+         .card.shift-record-dm{
+         background:#f1f5f9;
+         }
+
+         .card.shift-record-off{
+         background:#ffffff;
+         }
+
+         /* 滑鼠移入時仍保持當日班別背景 */
+         .card.shift-record-d:hover{
+         background:#fefce8;
+         }
+
+         .card.shift-record-dm:hover{
+         background:#f1f5f9;
+         }
+
+         .card.shift-record-off:hover{
+         background:#ffffff;
+         }
+         .card-time{
+         font-size:18px;
+         font-weight:700;
+         }
+         .card-location{
+         color:#111827;
+         margin-top:6px;
+         font-size:16px;
+         line-height:1.5;
+         }
+         /* =========================
+         卡片地點顏色
+         ========================= */
+         .loc-red{
+         display:inline-block;
+         background:#ff4d4f;
+         color:white;
+         padding:2px 6px;
+         border-radius:6px;
+         font-weight:600;
+         font-size:12px;
+         }
+         .loc-blue{
+         display:inline-block;
+         background:#1677ff;
+         color:white;
+         padding:2px 6px;
+         border-radius:6px;
+         font-weight:600;
+         font-size:12px;
+         }
+         .loc-green{
+         display:inline-block;
+         background:#52c41a;
+         color:white;
+         padding:2px 6px;
+         border-radius:6px;
+         font-weight:600;
+         font-size:12px;
+         }
+         .loc-gray{
+         display:inline-block;
+         background:#bfbfbf;
+         color:white;
+         padding:2px 6px;
+         border-radius:6px;
+         font-weight:600;
+         font-size:12px;
+         }
+         /* =========================
+            右區勤務紀錄：執勤地點
+            僅保留黑色文字，不填色
+            不影響中間月曆 event bar 顏色
+            ========================= */
+         .card-location .loc-red,
+         .card-location .loc-blue,
+         .card-location .loc-green,
+         .card-location .loc-gray{
+         display:inline;
+         background:transparent;
+         color:#111827;
+         padding:0;
+         margin:0;
+         border-radius:0;
+         font-weight:400;
+         font-size:16px !important;
+         line-height:1.5;
+         }
+         /* =========================
+         MODAL
+         ========================= */
+         .modal{
+         position:fixed;
+         inset:0;
+         background:rgba(0,0,0,.5);
+         display:none;
+         justify-content:center;
+         align-items:center;
+         }
+         .modal-content{
+         background:white;
+         width:700px;
+         max-width:95%;
+         max-height:90%;
+         overflow:auto;
+         border-radius:20px;
+         padding:20px;
+         }
+         .close-btn{
+         float:right;
+         cursor:pointer;
+         font-size:20px;
+         }
+         .info-row{
+         margin-bottom:10px;
+         }
+         .info-label{
+         font-weight:bold;
+         }
+         /* =========================
+         Score Badge
+         ========================= */
+         /* =========================
+         Performance Score System
+         ========================= */
+         .score-badge{
+         display:inline-flex;
+         align-items:center;
+         justify-content:center;
+         min-width:52px;
+         height:28px;
+         padding:0 12px;
+         border-radius:999px;
+         font-size:13px;
+         font-weight:700;
+         letter-spacing:.3px;
+         color:#fff;
+         box-shadow:0 2px 8px rgba(0,0,0,.12);
+         }
+         /* Excellent */
+         .score-g{
+         background:#22c55e;
+         }
+         /* Good */
+         .score-f{
+         background:#3b82f6;
+         }
+         /* Pass */
+         .score-p{
+         background:#f59e0b;
+         }
+         /* False Response */
+         .score-fr{
+         background:#ef4444;
+         }
+         /* Did Not Find */
+         .score-dnf{
+         background:#7f1d1d;
+         }
+         /* FR：紅色實線 */
+         .day{
+         position:relative;
+         }
+         .day-fr{
+         border:2px solid #ef4444 !important;
+         }
+         .day-dnf::after{
+         content:"";
+         position:absolute;
+         inset:4px;
+         border:2px dashed #ef4444;
+         border-radius:8px;
+         pointer-events:none;
+         }
+         .legend-box{
+         display:inline-block;
+         width:14px;
+         height:14px;
+         border-radius:3px;
+         margin-right:4px;
+         vertical-align:middle;
+         }
+         .legend-fr{
+         border:2px solid #ef4444;
+         }
+         .legend-dnf{
+         position:relative;
+         border:2px solid transparent;
+         }
+         .legend-dnf::after{
+         content:"";
+         position:absolute;
+         inset:-2px;
+         border:2px dashed #ef4444;
+         border-radius:3px;
+         }
+         /* =========================
+         Month Summary Card
+         ========================= */
+         .month-summary{
+         background:#ffffff;
+         border:1px solid #e5e7eb;
+         border-radius:18px;
+         padding:16px;
+         margin-bottom:16px;
+         box-shadow:0 4px 12px rgba(15,23,42,.06);
+         }
+         .month-summary-title{
+         font-size:16px;
+         font-weight:700;
+         color:#111827;
+         margin-bottom:10px;
+         }
+         .month-duty{
+         text-align:center;
+         padding-bottom:12px;
+         margin-bottom:12px;
+         border-bottom:1px solid #eef2f7;
+         }
+         .month-duty-number{
+         font-size:34px;
+         font-weight:700;
+         color:#111827;
+         line-height:1;
+         }
+         .month-duty-label{
+         margin-top:4px;
+         color:#94a3b8;
+         font-size:12px;
+         }
+.score-grid{
+    display:grid;
+    grid-template-columns:repeat(5,1fr);
+    gap:10px;
+    margin-top:12px;
+}
+         .score-item{
+         display:flex;
+         justify-content:space-between;
+         align-items:center;
+         background:#f8fafc;
+         border-radius:10px;
+         padding:8px 10px;
+         font-size:13px;
+         font-weight:600;
+         }
+         @media (max-width:1100px){
+            .mini-calendar-panel{padding:16px 10px;}
+            .mini-day{height:24px;font-size:9px;}
+            .mini-calendar-title{font-size:13px;}
+            .detail-panel{padding:14px;}
+         }
+         @media (max-width:850px){
+            .container{
+               display:flex;
+               flex-direction:column;
+               overflow:auto;
+               height:auto;
+               min-height:100vh;
+            }
+            .calendar-panel{display:contents;}
+            .mini-calendar-panel,
+            .main-calendar-panel,
+            .detail-panel{
+               width:auto;
+               min-width:0;
+               grid-column:auto;
+               margin:8px 12px;
+            }
+            .mini-calendar-panel{min-height:300px;}
+            .main-calendar-panel{min-height:650px;}
+            .detail-panel{min-height:320px;}
+         }
+/* =========================
+   右側：無執勤日誌 Empty State
+   ========================= */
+
+.timeline-empty-state{
+    height:100%;
+    min-height:360px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    color:#b8c7d9;
+    text-align:center;
+}
+
+.timeline-empty-icon{
+    width:76px;
+    height:76px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:#b8c7d9;
+    margin-bottom:14px;
+}
+
+.timeline-empty-icon svg{
+    width:68px;
+    height:68px;
+    display:block;
+}
+
+.timeline-empty-title{
+    color:#64748b;
+    font-size:15px;
+    font-weight:500;
+    letter-spacing:.2px;
+}
+      </style>
+   </head>
+   <body>
+      <div class="container">
+         <div class="calendar-panel">
+            <div class="mini-calendar-panel">
+               <div class="mini-calendar-head">
+                  <button class="mini-nav" onclick="changeMonth(-1)" aria-label="上一個月">‹</button>
+                  <div class="mini-calendar-title" id="miniCalendarTitle"></div>
+                  <button class="mini-nav" onclick="changeMonth(1)" aria-label="下一個月">›</button>
+               </div>
+               <div class="mini-weekdays">
+                  <div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div>
+               </div>
+               <div class="mini-grid" id="miniCalendarGrid"></div>
+               <div id="monthSummary" class="mini-month-summary"></div>
+               <div id="areaRewardRatio" class="area-reward-ratio"></div>
+            </div>
+            <div class="main-calendar-panel">
+            <div class="header">
+               <div class="header-top">
+                  <button
+                     class="nav-btn"
+                     onclick="changeMonth(-1)">
+                  ◀
+                  </button>
+                  <div
+                     class="month-title"
+                     id="monthTitle">
+                  </div>
+                  <button
+                     class="nav-btn"
+                     onclick="changeMonth(1)">
+                  ▶
+                  </button>
+               </div>
+               <div id="calendarNotice"></div>
+               <div id="shiftSummary"></div>
+            </div>
+            <div class="weekdays">
+               <div>日</div>
+               <div>一</div>
+               <div>二</div>
+               <div>三</div>
+               <div>四</div>
+               <div>五</div>
+               <div>六</div>
+            </div>
+            <div class="calendar-grid" id="calendarGrid"></div>
+            </div>
+         </div>
+         <div class="detail-panel">
+            <div class="detail-title" id="detailTitle">請選擇日期</div>
+            <div id="dayRecords"></div>
+         </div>
+      </div>
+      <div class="modal" id="cardModal">
+         <div class="modal-content">
+            <span class="close-btn" onclick="closeModal()">✕</span>
+            <div id="modalBody"></div>
+         </div>
+      </div>
+      <script>
+         // K9DB V1：Calendar 統一由 K9DB 資料層讀取。
+// 舊版 LocalStorage 仍保留，作為相容與備援。
+const DB_KEY = K9DB.KEY;
+
+/* =========================
+   Calendar DB 讀取函式
+   ========================= */
+function getCalendarDB(){
+    try{
+        const archives = K9DB.calendar.getArchives();
+
+        if(Array.isArray(archives) && archives.length){
+            return archives;
+        }
+
+        // 若 K9DB V1 尚無資料，保留 Legacy V4 作為備援。
+        const legacy = JSON.parse(
+            localStorage.getItem("K9_OFFICIAL_STATION_DB_V4") || "[]"
+        );
+
+        return Array.isArray(legacy) ? legacy : [];
+
+    }catch(error){
+        console.error("[K9 Calendar] Calendar DB 讀取失敗：", error);
+
+        try{
+            const legacy = JSON.parse(
+                localStorage.getItem("K9_OFFICIAL_STATION_DB_V4") || "[]"
+            );
+            return Array.isArray(legacy) ? legacy : [];
+        }catch(e){
+            return [];
+        }
+    }
+}
+
+let db = getCalendarDB();
+
+const SHIFT_KEY = "K9_SHIFT_DATA";
+
+/* =========================================================
+   K9DB V1：Calendar 班表資料層
+   主來源：K9DB.settings.calendarShiftData
+   Legacy K9_SHIFT_DATA 僅作第一次遷移／備援，不再作為主要來源。
+   ========================================================= */
+function getCalendarShiftData(){
+
+    let v1Shift = {};
+    let legacyShift = {};
+
+    /* ① 讀取 K9DB V1 */
+    try{
+        const value = K9DB.settings.get(
+            "calendarShiftData",
+            null
+        );
+
+        if(
+            value &&
+            typeof value === "object" &&
+            !Array.isArray(value)
+        ){
+            v1Shift = value;
+        }
+    }catch(error){
+        console.warn(
+            "[K9 Calendar] K9DB V1 班表讀取失敗：",
+            error
+        );
+    }
+
+    /* ② 讀取 Legacy 班表
+       目前 index.html 的班表匯入仍會寫入 K9_SHIFT_DATA，
+       因此這裡必須同步最新 Legacy 資料，避免 K9DB V1
+       在第一次遷移後一直停留在舊快照。 */
+    try{
+        const legacy = JSON.parse(
+            localStorage.getItem(SHIFT_KEY) || "{}"
+        );
+
+        if(
+            legacy &&
+            typeof legacy === "object" &&
+            !Array.isArray(legacy)
+        ){
+            legacyShift = legacy;
+        }
+    }catch(error){
+        console.warn(
+            "[K9 Calendar] Legacy 班表讀取失敗：",
+            error
+        );
+    }
+
+    /* ③ Legacy 有資料時，以最新 Legacy 為優先，
+          同時寫回 K9DB V1。 */
+    if(Object.keys(legacyShift).length > 0){
+
+        const mergedShift = {
+            ...v1Shift,
+            ...legacyShift
+        };
+
+        try{
+            K9DB.settings.set(
+                "calendarShiftData",
+                mergedShift
+            );
+        }catch(error){
+            console.warn(
+                "[K9 Calendar] 班表同步至 K9DB V1 失敗：",
+                error
+            );
+        }
+
+        return mergedShift;
+    }
+
+    /* ④ Legacy 沒有資料時，使用 K9DB V1 */
+    return v1Shift;
+}
+
+let shiftData = getCalendarShiftData();
+
+const USER_KEY = "K9_CURRENT_AUTH";
+         
+         const currentUser =
+             JSON.parse(
+                 localStorage.getItem(USER_KEY) || "{}"
+             );
+         
+         const handlerName =
+             currentUser.name || "";
+
+// Calendar 狀態
+// 這兩個變數必須在所有 render 函式執行前初始化。
+let currentDate = new Date();
+let events = [];
+         
+         /* =========================
+            地點顏色分類
+         ========================= */
+         
+         function getLocationColor(location){
+         
+             const airport = ["T1","T2","T3"];
+             const blueGroup = ["遠雄","榮儲","華儲","UPS","FEDEX","DHL"];
+         
+             if(airport.some(x => location.includes(x))){
+                 return "loc-red";
+             }
+         
+             if(blueGroup.some(x => location.includes(x))){
+                 return "loc-blue";
+             }
+         
+             if(location.includes("郵局")){
+                 return "loc-green";
+             }
+         
+             return "loc-gray";
+         }
+         
+         function getScoreBadge(score){
+         
+         switch(score){
+         
+         case "G":
+            return `<span class="score-badge score-g">G</span>`;
+         
+         case "F":
+            return `<span class="score-badge score-f">F</span>`;
+         
+         case "P":
+            return `<span class="score-badge score-p">P</span>`;
+         
+         case "FR":
+            return `<span class="score-badge score-fr">FR</span>`;
+         
+         case "DNF":
+            return `<span class="score-badge score-dnf">DNF</span>`;
+         
+         default:
+            return "";
+         }
+         
+         }
+         const VIDEO_ROOT = "Video";
+
+/* =========================
+   影片相容層
+   新版：record.videos = [...]
+   舊版：record.video = {...}
+   ========================= */
+
+function getRecordVideos(record){
+
+    if(Array.isArray(record.videos) && record.videos.length){
+        return record.videos.filter(v => v && v.name);
+    }
+
+    if(record.video && record.video.name){
+        return [record.video];
+    }
+
+    return [];
+}
+
+function getVideoPath(record, video){
+
+    if(!record || !video || !video.name)
+        return null;
+
+    const [year, month] = String(record.date || "").split("-");
+
+    if(!year || !month)
+        return null;
+
+    return `${VIDEO_ROOT}/${year}/${month}/${video.name}`;
+}
+
+/* =========================
+   月曆 event bar 顏色
+         ========================= */
+         
+         function getEventColorClass(location){
+         
+             const airport = ["T1","T2","T3"];
+             const blueGroup = ["遠雄","榮儲","華儲","UPS","FEDEX","DHL"];
+         
+             if(airport.some(x => location.includes(x))){
+                 return "event-bar event-red";
+             }
+         
+             if(blueGroup.some(x => location.includes(x))){
+                 return "event-bar event-blue";
+             }
+         
+             if(location.includes("郵局")){
+                 return "event-bar event-green";
+             }
+         
+             return "event-bar event-gray";
+         }
+         /* =========================
+            建立事件
+         ========================= */
+         
+         function buildEvents(){
+         
+             events = [];
+         
+             db.forEach(archive=>{
+         
+                 if(!archive.data) return;
+         
+                 archive.data.forEach(r=>{
+         
+         events.push({
+         
+         date: archive.date,
+         time: r.timestamp || "",
+         location: r.location || "",
+mode: r.mode || "",
+
+scent: r.scent || null,
+
+score: r.score || "",
+         
+         remark: r.remark || "",
+         setup: r.setup || "",
+         behavior: r.behavior || "",
+         cib: r.cib || "",
+         discussion: r.discussion || "",
+         videos: getRecordVideos(r),
+         /* 舊版欄位保留，避免其他既有功能受影響 */
+         video: r.video || (
+             Array.isArray(r.videos) && r.videos.length
+                 ? r.videos[0]
+                 : null
+         ),
+         raw:r
+         
+         });
+         
+                 });
+         
+             });
+         }
+         
+         /* =========================
+            當月工作獎賞比
+            定義：
+            總次數 / (真品＋非真品)
+
+            真品：H、C、K、M、A、T
+            非真品：Cs、Ms、M/O
+            ========================= */
+         function getMonthlyWorkRewardRatio(year, month){
+
+             const monthPrefix =
+                 `${year}-${String(month + 1).padStart(2,"0")}-`;
+
+             let totalTimes = 0;
+             let trueScent = 0;
+             let falseScent = 0;
+
+             db.forEach(archive => {
+
+                 if(!archive.date || !archive.date.startsWith(monthPrefix))
+                     return;
+
+                 if(!Array.isArray(archive.data))
+                     return;
+
+                 archive.data.forEach(record => {
+
+                     // 每一筆勤務紀錄計 1 次工作次數
+                     totalTimes++;
+
+                     const scentType =
+                         record.scent && record.scent.type
+                         ? String(record.scent.type).trim()
+                         : "";
+
+                     if(["H","C","K","M","A","T"].includes(scentType)){
+                         trueScent++;
+                     }
+                     else if(["Cs","Ms","M/O"].includes(scentType)){
+                         falseScent++;
+                     }
+
+                 });
+
+             });
+
+             const scentTotal = trueScent + falseScent;
+
+             return {
+                 totalTimes,
+                 trueScent,
+                 falseScent,
+                 scentTotal,
+                 ratio: scentTotal > 0
+                     ? (totalTimes / scentTotal).toFixed(2)
+                     : "0.00"
+             };
+         }
+
+         /* =========================
+            月曆渲染
+         ========================= */
+         
+         
+         
+         
+         /* =========================
+            縮小月曆：LSR 日期標記
+            規則：當日任一勤務的 mode 為 LSR，即在日期外圈紅圈
+            ========================= */
+         function isLsrRecord(record){
+             return String(record?.mode || "").trim().toUpperCase() === "LSR";
+         }
+
+         function renderMiniCalendar(){
+             const year = currentDate.getFullYear();
+             const month = currentDate.getMonth();
+             const today = new Date();
+             const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+
+             const selectedDate = document.getElementById("detailTitle")?.innerText || "";
+             document.getElementById("miniCalendarTitle").innerText = `${year}年${month+1}月`;
+
+             const grid = document.getElementById("miniCalendarGrid");
+             grid.innerHTML = "";
+
+             const firstDay = new Date(year, month, 1).getDay();
+             const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+             // 顯示前一月尾端日期，視覺上接近一般縮小月曆
+             const prevDays = new Date(year, month, 0).getDate();
+             for(let i = firstDay - 1; i >= 0; i--){
+                 const n = prevDays - i;
+                 grid.innerHTML += `<div class="mini-day muted">${n}</div>`;
+             }
+
+             for(let day = 1; day <= daysInMonth; day++){
+                 const dateStr = `${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+                 const dayEvents = events.filter(e => e.date === dateStr);
+                 const hasLSR = dayEvents.some(isLsrRecord);
+
+                 const classes = [
+                     "mini-day",
+                     dateStr === todayStr ? "today" : "",
+                     dateStr === selectedDate ? "selected" : "",
+                     hasLSR ? "lsr" : ""
+                 ].filter(Boolean).join(" ");
+
+                 grid.innerHTML += `<div class="${classes}" onclick="showDay('${dateStr}')" title="${hasLSR ? "本日有 LSR" : dateStr}">${day}</div>`;
+             }
+
+             // 補滿 6 週，避免月份切換時縮小月曆高度跳動
+             const totalCells = firstDay + daysInMonth;
+             const trailing = (7 - (totalCells % 7)) % 7;
+             for(let day = 1; day <= trailing; day++){
+                 grid.innerHTML += `<div class="mini-day muted">${day}</div>`;
+             }
+         }
+
+         function renderCalendar(){
+         
+         let dCount = 0;
+         
+         let dmCount = 0;
+         
+         let offCount = 0;
+         
+             const year = currentDate.getFullYear();
+             const month = currentDate.getMonth();
+         
+             const today = new Date();
+             const todayStr =
+             `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+         
+             document.getElementById("monthTitle").innerText =
+                 `${year}年 ${month+1}月`;
+         
+             const grid = document.getElementById("calendarGrid");
+             grid.innerHTML = "";
+         
+             const firstDay = new Date(year,month,1).getDay();
+             const daysInMonth = new Date(year,month+1,0).getDate();
+         
+             for(let i=0;i<firstDay;i++){
+                 grid.innerHTML += `<div></div>`;
+             }
+         
+             for(let day=1; day<=daysInMonth; day++){
+         
+                 const dateStr =
+                 `${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+         
+         // 中央月曆時間軸也使用與右側／詳細內容完全相同的排序
+         const dayEvents = getSortedDayEvents(dateStr);
+         const hasDNF = dayEvents.some(e => e.score === "DNF");
+         const hasFR = dayEvents.some(e => e.score === "FR");
+         let alertClass = "";
+         
+         if(hasFR){
+         
+         alertClass += " day-fr";
+         
+         }
+         
+         if(hasDNF){
+         
+         alertClass += " day-dnf";
+         
+         }
+         
+const shift =
+    shiftData?.[dateStr] || "";
+         
+         let shiftClass = "";
+         
+         if(shift==="D"){
+         
+             shiftClass="shift-d";
+         
+             dCount++;
+         
+         }
+         else if(shift==="DM"){
+         
+             shiftClass="shift-dm";
+         
+             dmCount++;
+         
+         }
+         else if(shift==="OFF"){
+         
+             shiftClass="shift-off";
+         
+             offCount++;
+         
+         }
+         
+         let html = `
+         <div
+         class="day ${shiftClass} ${dateStr===todayStr?"today":""} ${alertClass}"
+         onclick="showDay('${dateStr}')">
+         
+         <div class="day-number">
+         
+         <span class="${
+         dateStr === todayStr
+         ? "today-number"
+         : ""
+         }">
+         ${day}
+         </span>
+         
+         <span class="shift-tag">
+         ${shift}
+         </span>
+         
+         </div>
+         `;
+         
+                 dayEvents.slice(0,3).forEach(e=>{
+                     html += `
+                     <div class="${getEventColorClass(e.location)}">
+                         ${e.time} ${e.location}
+                     </div>`;
+                 });
+         
+                 html += "</div>";
+         
+                 grid.innerHTML += html;
+             }
+         
+         const workReward =
+         getMonthlyWorkRewardRatio(year, month);
+
+         document.getElementById("shiftSummary").innerHTML = `
+         <div class="shift-stat">
+         <span class="legend-box legend-fr"></span>
+         FR
+         </div>
+
+         <div class="shift-stat">
+         <span class="legend-box legend-dnf"></span>
+         DNF
+         </div>
+
+         <div class="shift-stat work-reward-stat">
+            <div class="work-reward-info">
+               <div class="work-reward-title">當月工作獎賞比</div>
+               <div class="work-reward-subtitle">總次數 / (真品＋非真品)</div>
+            </div>
+            <div class="work-reward-value">${workReward.ratio}</div>
+         </div>
+         `;
+         
+         // 判斷目前月份是否有班表
+         const currentMonthPrefix =
+         `${year}-${String(month + 1).padStart(2, "0")}-`;
+         
+         const hasShiftData =
+         Object.keys(shiftData).some(date =>
+         date.startsWith(currentMonthPrefix)
+         );
+         
+         document.getElementById("calendarNotice").innerHTML =
+         hasShiftData
+         ? `
+         <div class="notice-badge notice-success">
+            ✅ ${month + 1} 月班表已載入
+         </div>
+         `
+         : `
+         <div class="notice-badge notice-empty">
+            ⚠️ ${month + 1} 月尚未載入班表
+         </div>
+         `;
+         
+
+         renderMiniCalendar();
+         }
+         
+         /* =========================
+         本月勤務統計
+         ========================= */
+         
+         function renderMonthSummary(){
+
+         const year = currentDate.getFullYear();
+
+         const month =
+         String(currentDate.getMonth() + 1)
+         .padStart(2,"0");
+
+         const monthPrefix =
+         `${year}-${month}`;
+
+         const stats = {
+            G:0,
+            F:0,
+            P:0,
+            FR:0,
+            DNF:0
+         };
+
+         // 附件 UI 的嗅源分類；若資料庫出現其他嗅源，會自動加到最後
+         const scentOrder = ["H","C","K","M","A","T","Cs","Ms","M/O"];
+         const scentStats = {};
+         scentOrder.forEach(type => scentStats[type] = 0);
+
+         db.forEach(archive => {
+
+            if(!archive.date || !archive.date.startsWith(monthPrefix))
+               return;
+
+            if(!Array.isArray(archive.data))
+               return;
+
+            archive.data.forEach(record => {
+
+               if(stats.hasOwnProperty(record.score)){
+                  stats[record.score]++;
+               }
+
+               const scentType =
+                  record.scent && record.scent.type
+                  ? String(record.scent.type).trim()
+                  : "";
+
+               if(scentType){
+                  if(!scentStats.hasOwnProperty(scentType)){
+                     scentStats[scentType] = 0;
+                  }
+                  scentStats[scentType]++;
+               }
+
+            });
+
+         });
+
+         const totalDuty =
+            stats.G +
+            stats.F +
+            stats.P +
+            stats.FR +
+            stats.DNF;
+
+         const scentH = scentStats["H"] || 0;
+         const scentC = scentStats["C"] || 0;
+         const scentK = scentStats["K"] || 0;
+         const scentM = scentStats["M"] || 0;
+         const scentA = scentStats["A"] || 0;
+         const scentT = scentStats["T"] || 0;
+         const scentCs = scentStats["Cs"] || 0;
+         const scentMs = scentStats["Ms"] || 0;
+         const scentMO = scentStats["M/O"] || 0;
+
+         // Scent RATE 定義：
+         // (H+C+K+M+A+T) /
+         // (H+C+K+M+A+T+Cs+Ms+M/O)
+         const scentNumerator =
+            scentH + scentC + scentK + scentM + scentA + scentT;
+
+         const scentDenominator =
+            scentNumerator + scentCs + scentMs + scentMO;
+
+         const scentRate =
+            scentDenominator > 0
+            ? ((scentNumerator / scentDenominator) * 100).toFixed(1)
+            : "0.0";
+
+         const maxScent =
+            Math.max(1, ...Object.values(scentStats));
+
+         const scoreItems = [
+            ["G","score-g"],
+            ["F","score-f"],
+            ["P","score-p"],
+            ["FR","score-fr"],
+            ["DNF","score-dnf"]
+         ];
+
+         const scoreHtml = scoreItems.map(([score, cls]) => {
+
+            const count = stats[score];
+            const rate =
+               totalDuty > 0
+               ? ((count / totalDuty) * 100).toFixed(1)
+               : "0.0";
+
+            return `
+               <div class="score-stat ${cls}">
+                  <div class="score-stat-number">${count}</div>
+                  <div class="score-stat-label">${score}</div>
+                  <div class="score-stat-rate">${rate}%</div>
+                  <div class="stat-progress">
+                     <span style="width:${rate}%"></span>
+                  </div>
+               </div>
+            `;
+
+         }).join("");
+
+         const scentHtml = Object.keys(scentStats).map(type => {
+
+            const count = scentStats[type];
+            const width =
+               count > 0
+               ? ((count / maxScent) * 100).toFixed(1)
+               : "0";
+
+            return `
+               <div class="scent-stat">
+                  <div class="scent-top">
+                     <span class="scent-name">${type}</span>
+                     <span class="scent-number">${count}</span>
+                  </div>
+                  <div class="scent-progress">
+                     <span style="width:${width}%"></span>
+                  </div>
+               </div>
+            `;
+
+         }).join("");
+
+         document.getElementById("monthSummary").innerHTML = `
+
+            <div class="stats-card">
+
+               <div class="stats-card-head">
+                  <div>
+                     <div class="stats-card-title">🎯 Performance</div>
+                     <div class="stats-card-subtitle">當月表現評比</div>
+                  </div>
+
+                  <div class="stats-total">
+                     <div class="stats-total-label">TOTAL</div>
+                     <div class="stats-total-number">${totalDuty}</div>
+                  </div>
+               </div>
+
+               <div class="score-grid">
+                  ${scoreHtml}
+               </div>
+
+            </div>
+
+            <div class="stats-card">
+
+               <div class="stats-card-head">
+                  <div>
+                     <div class="stats-card-title">🧬 Scent</div>
+                     <div class="stats-card-subtitle">當月嗅源使用次數</div>
+                  </div>
+
+                  <div class="scent-rate">
+                     RATE: ${scentRate}%
+                  </div>
+               </div>
+
+               <div class="scent-grid">
+                  ${scentHtml}
+               </div>
+
+            </div>
+
+         `;
+
+         };
+
+         /* =========================
+            Area Reward Ratio
+            機場：T1 / T2 / T3
+            貨區：遠雄、榮儲、華儲、UPS、FEDEX、DHL
+            郵局：航郵中心、林口郵政園區
+            定義：區域執勤次數 ÷ 區域嗅源次數
+            ========================= */
+
+         function getAreaRewardCategory(location){
+
+             const x = String(location || "").trim();
+
+             if(/^T[123](?:$|[－\-\s])/i.test(x)){
+                 return "airport";
+             }
+
+             if(
+                 /^(遠雄|榮儲|華儲)[－\-](一般倉|轉口倉|理貨區|驗貨區)/.test(x) ||
+                 /^(DHL|FEDEX|UPS)(?:$|[－\-\s])/i.test(x)
+             ){
+                 return "cargo";
+             }
+
+             if(
+                 ["郵局－航郵出口","郵局-航郵出口",
+                  "郵局－航郵進口","郵局-航郵進口",
+                  "郵局－林口郵政園區","郵局-林口郵政園區"].includes(x)
+             ){
+                 return "post";
+             }
+
+             return null;
+         }
+
+         function getMonthlyAreaRewardRatio(year, month){
+
+             const monthPrefix =
+                 `${year}-${String(month + 1).padStart(2,"0")}-`;
+
+             const stats = {
+                 airport:{duty:0,scent:0},
+                 cargo:{duty:0,scent:0},
+                 post:{duty:0,scent:0}
+             };
+
+             db.forEach(archive => {
+
+                 if(!archive.date || !archive.date.startsWith(monthPrefix))
+                     return;
+
+                 if(!Array.isArray(archive.data))
+                     return;
+
+                 archive.data.forEach(record => {
+
+                     const category =
+                         getAreaRewardCategory(record.location);
+
+                     if(!category)
+                         return;
+
+                     stats[category].duty++;
+
+                     const scentType =
+                         record.scent && record.scent.type
+                         ? String(record.scent.type).trim()
+                         : "";
+
+                     if(scentType){
+                         stats[category].scent++;
+                     }
+
+                 });
+
+             });
+
+             Object.values(stats).forEach(item => {
+
+                 item.ratio =
+                     item.scent > 0
+                     ? (item.duty / item.scent).toFixed(2)
+                     : "0.00";
+
+             });
+
+             return stats;
+         }
+
+         function renderAreaRewardRatio(){
+
+             const year = currentDate.getFullYear();
+             const month = currentDate.getMonth();
+
+             const stats =
+                 getMonthlyAreaRewardRatio(year, month);
+
+             const totalDuty =
+                 stats.airport.duty +
+                 stats.cargo.duty +
+                 stats.post.duty;
+
+             const totalScent =
+                 stats.airport.scent +
+                 stats.cargo.scent +
+                 stats.post.scent;
+
+             const totalRate =
+                 totalDuty > 0
+                 ? ((totalScent / totalDuty) * 100).toFixed(1)
+                 : "0.0";
+
+             const maxDuty =
+                 Math.max(
+                     1,
+                     stats.airport.duty,
+                     stats.cargo.duty,
+                     stats.post.duty
+                 );
+
+             document.getElementById("areaRewardRatio").innerHTML = `
+
+                 <div class="area-reward-ratio-card">
+
+                    <div class="area-reward-ratio-head">
+
+                       <div class="area-reward-ratio-title-wrap">
+
+                          <div class="area-reward-ratio-title">
+                             🎯 Area Reward Ratio
+                          </div>
+
+                          <div class="area-reward-ratio-subtitle">
+                             當月各區域獎賞比
+                          </div>
+
+                       </div>
+
+
+
+                    </div>
+
+                    <div class="area-reward-grid">
+
+                       <div class="area-reward-stat airport">
+
+                          <div class="area-reward-stat-top">
+
+                             <div class="area-reward-stat-name">
+                                <span class="area-reward-stat-icon">✈️</span>
+                                <span>機場</span>
+                             </div>
+
+                             <div class="area-reward-stat-number">
+                                ${stats.airport.ratio}
+                             </div>
+
+                          </div>
+
+                          <div class="area-reward-stat-meta">
+                             執勤 <strong>${stats.airport.duty}</strong> 次
+                             ｜嗅源 <strong>${stats.airport.scent}</strong> 次
+                          </div>
+
+
+
+                       </div>
+
+                       <div class="area-reward-stat cargo">
+
+                          <div class="area-reward-stat-top">
+
+                             <div class="area-reward-stat-name">
+                                <span class="area-reward-stat-icon">📦</span>
+                                <span>貨區</span>
+                             </div>
+
+                             <div class="area-reward-stat-number">
+                                ${stats.cargo.ratio}
+                             </div>
+
+                          </div>
+
+                          <div class="area-reward-stat-meta">
+                             執勤 <strong>${stats.cargo.duty}</strong> 次
+                             ｜嗅源 <strong>${stats.cargo.scent}</strong> 次
+                          </div>
+
+
+
+                       </div>
+
+                       <div class="area-reward-stat post">
+
+                          <div class="area-reward-stat-top">
+
+                             <div class="area-reward-stat-name">
+                                <span class="area-reward-stat-icon">📮</span>
+                                <span>郵局</span>
+                             </div>
+
+                             <div class="area-reward-stat-number">
+                                ${stats.post.ratio}
+                             </div>
+
+                          </div>
+
+                          <div class="area-reward-stat-meta">
+                             執勤 <strong>${stats.post.duty}</strong> 次
+                             ｜嗅源 <strong>${stats.post.scent}</strong> 次
+                          </div>
+
+
+
+                       </div>
+
+                    </div>
+
+                 </div>
+
+             `;
+         }
+
+         function getDailyLocationCounts(records){
+             const counts={airport:0,generalCargo:0,expressCargo:0,airmail:0,northPost:0};
+             records.forEach(r=>{
+                 const x=String(r.location||"").trim();
+                 if(/^T[123](?:$|[－\-\s])/i.test(x)){counts.airport++;return;}
+                 if(x==="遠雄－冷鏈倉" || x==="遠雄-冷鏈倉" || /^(遠雄|榮儲|華儲)[－\-](一般倉|轉口倉)$/.test(x)){counts.generalCargo++;return;}
+                 if(/^(遠雄|榮儲|華儲)[－\-](理貨區|驗貨區)/.test(x)||/^(DHL|FEDEX|UPS)(?:$|[－\-\s])/i.test(x)){counts.expressCargo++;return;}
+                 if(["郵局－航郵出口","郵局-航郵出口","郵局－航郵進口","郵局-航郵進口"].includes(x)){counts.airmail++;return;}
+                 if(["郵局－林口郵政園區","郵局-林口郵政園區"].includes(x)){counts.northPost++;return;}
+             }); return counts;
+         }
+         function renderDailyLocationSummary(records){
+             const c = getDailyLocationCounts(records);
+             const total = records.length;
+
+             // 班別沿用目前日期的 shiftData；沒有班表時顯示「未排班」
+             const date = records.length ? records[0].date : "";
+             const shift = shiftData?.[date] || "未排班";
+
+             return `
+                <div class="daily-location-summary">
+                   <div class="daily-location-summary-head">
+                      <div class="daily-location-shift">班表${shift}</div>
+                      <div class="daily-location-total">${total} 筆勤務</div>
+                   </div>
+
+                   <div class="daily-location-grid">
+                      <div class="daily-location-stat">
+                         <div class="daily-location-stat-title">機場</div>
+                         <div class="daily-location-stat-number">${c.airport}</div>
+                      </div>
+                      <div class="daily-location-stat">
+                         <div class="daily-location-stat-title">一般<br>貨區</div>
+                         <div class="daily-location-stat-number">${c.generalCargo}</div>
+                      </div>
+                      <div class="daily-location-stat">
+                         <div class="daily-location-stat-title">快遞<br>貨區</div>
+                         <div class="daily-location-stat-number">${c.expressCargo}</div>
+                      </div>
+                      <div class="daily-location-stat">
+                         <div class="daily-location-stat-title">航郵<br>中心</div>
+                         <div class="daily-location-stat-number">${c.airmail}</div>
+                      </div>
+                      <div class="daily-location-stat">
+                         <div class="daily-location-stat-title">北郵</div>
+                         <div class="daily-location-stat-number">${c.northPost}</div>
+                      </div>
+                   </div>
+                </div>
+             `;
+         }
+
+         function getShiftRecordClass(date){
+
+             const shift = shiftData?.[date] || "";
+
+             if(shift === "D"){
+                 return "shift-record-d";
+             }
+
+             if(shift === "DM"){
+                 return "shift-record-dm";
+             }
+
+             if(shift === "OFF"){
+                 return "shift-record-off";
+             }
+
+             return "";
+         }
+
+         /* =========================
+            同一天所有勤務資料統一依時間排序
+            → 月曆時間軸、右側勤務卡片、任務詳細內容
+              必須使用同一份排序結果，避免點擊後資料對不起來
+         ========================= */
+         function getSortedDayEvents(date){
+             return events
+                 .map((event, originalIndex) => ({ event, originalIndex }))
+                 .filter(item => item.event.date === date)
+                 .sort((a,b)=>{
+                     const toMinutes = (time)=>{
+                         const match = String(time || "").trim().match(/^(\d{1,2}):(\d{2})/);
+                         if(!match) return Number.MAX_SAFE_INTEGER;
+                         return Number(match[1]) * 60 + Number(match[2]);
+                     };
+
+                     const timeDiff = toMinutes(a.event.time) - toMinutes(b.event.time);
+
+                     // 相同時間維持原始資料順序，避免資料被重新打亂
+                     return timeDiff !== 0
+                         ? timeDiff
+                         : a.originalIndex - b.originalIndex;
+                 })
+                 .map(item => item.event);
+         }
+
+         function showDay(date){
+
+             // 右側時序圖與月曆／詳細內容共用完全相同的排序資料
+             const records = getSortedDayEvents(date);
+
+             document.getElementById("detailTitle").innerText = date;
+
+             const shiftRecordClass = getShiftRecordClass(date);
+
+if(!records.length){
+    document.getElementById("dayRecords").innerHTML = `
+       <div class="timeline-empty-state">
+
+          <div class="timeline-empty-icon">
+
+             <svg
+                viewBox="0 0 64 64"
+                aria-hidden="true">
+
+                <rect
+                   x="17"
+                   y="13"
+                   width="30"
+                   height="42"
+                   rx="6"
+                   fill="none"
+                   stroke="currentColor"
+                   stroke-width="2.5"
+                />
+
+                <path
+                   d="M24 13
+                      V10
+                      C24 8 25.5 7 28 7
+                      H36
+                      C38.5 7 40 8 40 10
+                      V13"
+                   fill="none"
+                   stroke="currentColor"
+                   stroke-width="2.5"
+                   stroke-linecap="round"
+                />
+
+                <line
+                   x1="24"
+                   y1="25"
+                   x2="40"
+                   y2="25"
+                   stroke="currentColor"
+                   stroke-width="2.5"
+                   stroke-linecap="round"
+                />
+
+                <line
+                   x1="24"
+                   y1="33"
+                   x2="40"
+                   y2="33"
+                   stroke="currentColor"
+                   stroke-width="2.5"
+                   stroke-linecap="round"
+                />
+
+                <line
+                   x1="24"
+                   y1="41"
+                   x2="36"
+                   y2="41"
+                   stroke="currentColor"
+                   stroke-width="2.5"
+                   stroke-linecap="round"
+                />
+
+             </svg>
+
+          </div>
+
+          <div class="timeline-empty-title">
+             尚未新增紀錄
+          </div>
+
+       </div>
+    `;
+
+    renderMiniCalendar();
+    return;
+}
+
+             const shiftLabel = shiftData?.[date] || "未排班";
+
+             let html = `
+                <div class="timeline-wrap">
+
+                   ${renderDailyLocationSummary(records)}
+                   <div class="timeline">
+             `;
+
+             records.forEach((r,index)=>{
+
+                 const score = String(r.score || "").toUpperCase();
+
+                 const nodeClass =
+                    score === "G" ? "score-g" :
+                    score === "F" ? "score-f" :
+                    score === "P" ? "score-p" :
+                    score === "FR" ? "score-fr" :
+                    score === "DNF" ? "score-dnf" : "";
+
+                 const dogClass =
+                    score === "G" ? "dog-g" :
+                    score === "F" ? "dog-f" :
+                    score === "P" ? "dog-p" :
+                    score === "FR" ? "dog-fr" :
+                    score === "DNF" ? "dog-dnf" : "dog-none";
+
+                 // 計算與下一筆勤務的時間差，讓時序感更清楚
+                 let gapHtml = "";
+                 if(index < records.length - 1){
+                     const parseMinutes = (time)=>{
+                         const m = String(time || "").trim().match(/^(\d{1,2}):(\d{2})/);
+                         return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+                     };
+
+                     const a = parseMinutes(r.time);
+                     const b = parseMinutes(records[index + 1].time);
+
+                     if(a !== null && b !== null && b >= a){
+                         const diff = b - a;
+                         if(diff > 0){
+                             const h = Math.floor(diff / 60);
+                             const m = diff % 60;
+                             const gapText = h > 0
+                                ? `${h} 小時${m ? ` ${m} 分鐘` : ""}`
+                                : `${m} 分鐘`;
+
+                             gapHtml = `
+                                <div class="timeline-gap">
+                                   ↓ 間隔 ${gapText}
+                                </div>
+                             `;
+                         }
+                     }
+                 }
+
+                 html += `
+                    <div class="timeline-item">
+
+                       <div class="timeline-time">
+                          ${r.time || "--:--"}
+                       </div>
+
+                       <div class="timeline-node-col">
+                          <div class="timeline-node ${nodeClass}"></div>
+                       </div>
+
+                       <div class="timeline-card ${shiftRecordClass}"
+                            onclick="showCard(${index},'${date}')">
+
+                          <div class="timeline-card-top">
+                             ${score ? getScoreBadge(score) : ""}
+                          </div>
+
+                          <div class="timeline-location">
+                             📍 ${r.location || "—"}
+                          </div>
+
+                          <div class="timeline-mode">
+                             🎯 ${r.mode || "—"}
+                          </div>
+
+                       </div>
+
+                       ${gapHtml}
+
+                    </div>
+                 `;
+             });
+
+             html += `
+                   </div>
+                </div>
+             `;
+
+             document.getElementById("dayRecords").innerHTML = html;
+
+             renderMiniCalendar();
+         }
+
+         /* =========================
+            Modal
+         ========================= */
+         
+function showCard(index,date){
+
+    // 必須與 showDay() 使用完全相同的排序，才能確保點擊第 N 回合
+    // 顯示的「任務詳細內容」就是時間軸上的第 N 筆資料
+    const records = getSortedDayEvents(date);
+    const r = records[index];
+
+    document.getElementById("cardModal").style.display = "flex";
+
+    document.getElementById("modalBody").innerHTML = `
+        <h2>任務詳細內容</h2>
+        <hr><br>
+
+        <div class="info-row">
+            <span class="info-label">時間：</span>${r.time}
+        </div>
+
+        <div class="info-row">
+            <span class="info-label">地點：</span>${r.location}
+        </div>
+
+        <div class="info-row">
+            <span class="info-label">模式：</span>${r.mode}
+        </div>
+
+        <div class="info-row">
+            <span class="info-label">嗅源：</span>
+            ${r.scent ? r.scent.type : "—"}
+        </div>
+
+        <div class="info-row">
+            <span class="info-label">嗅源重量：</span>
+            ${r.scent && r.scent.weight ? r.scent.weight + " g" : "—"}
+        </div>
+
+        <div class="info-row">
+            <span class="info-label">滲透時間：</span>
+            ${r.scent && r.scent.soak ? r.scent.soak + " 分鐘" : "—"}
+        </div>
+
+        <div class="info-row">
+            <span class="info-label">表現評比：</span>
+            ${getScoreBadge(r.score)}
+        </div>
+
+        <div class="info-row">
+            <span class="info-label">訓練目的：</span>${r.remark || "—"}
+        </div>
+
+        <div class="info-row">
+            <span class="info-label">設置方式：</span>${r.setup || "—"}
+        </div>
+
+        <div class="info-row">
+            <span class="info-label">犬隻表現：</span>${r.behavior || "—"}
+        </div>
+
+        <div class="info-row">
+            <span class="info-label">CIB：</span>${r.cib || "—"}
+        </div>
+
+        <div class="info-row">
+            <span class="info-label">檢討事項：</span>${r.discussion || "—"}
+        </div>
+
+        ${(() => {
+
+            const videos = getRecordVideos(r);
+
+            if(!videos.length){
+                return "";
+            }
+
+            return `
+
+            <hr style="margin:18px 0;">
+
+            <div class="info-row">
+
+                <span class="info-label">
+                    🎥 執勤影片（${videos.length} 部）
+                </span>
+
+                <br><br>
+
+                ${videos.map((video, videoIndex) => {
+
+                    const ext = String(video.name || "")
+                        .split(".")
+                        .pop()
+                        .toLowerCase();
+
+                    if(ext !== "mp4"){
+
+                        return `
+
+                        <div style="
+                            margin-bottom:16px;
+                            padding:14px;
+                            border:1px solid #fcd34d;
+                            border-radius:12px;
+                            background:#fffbeb;
+                        ">
+
+                            <div style="
+                                font-weight:700;
+                                color:#b45309;
+                                margin-bottom:6px;
+                            ">
+                                ⚠ 影片 ${videoIndex + 1}：不支援影片格式
+                            </div>
+
+                            <div style="
+                                font-size:13px;
+                                color:#475569;
+                                word-break:break-all;
+                            ">
+                                ${video.name}
+                            </div>
+
+                            <div style="
+                                margin-top:6px;
+                                font-size:12px;
+                                color:#64748b;
+                            ">
+                                目前 K9 僅支援 MP4 播放。
+                            </div>
+
+                        </div>
+
+                        `;
+
+                    }
+
+                    return `
+
+                    <div style="margin-bottom:18px;">
+
+                        <div style="
+                            font-weight:700;
+                            font-size:14px;
+                            margin-bottom:8px;
+                            color:#334155;
+                        ">
+                            🎬 影片 ${videoIndex + 1}
+                            <span style="
+                                font-weight:400;
+                                color:#64748b;
+                                margin-left:6px;
+                                word-break:break-all;
+                            ">
+                                ${video.name}
+                            </span>
+                        </div>
+
+                        <video
+                            controls
+                            preload="metadata"
+                            style="
+                                width:100%;
+                                border-radius:12px;
+                                border:1px solid #e5e7eb;
+                                background:#000;
+                            ">
+
+                            <source
+                                src="${getVideoPath(r, video)}"
+                                type="video/mp4">
+
+                            您的瀏覽器不支援影片播放。
+
+                        </video>
+
+                    </div>
+
+                    `;
+
+                }).join("")}
+
+            </div>
+
+            `;
+
+        })()}
+
+    `;
+
+}
+         
+         function closeModal(){
+             document.getElementById("cardModal").style.display = "none";
+         }
+         
+         function changeMonth(step){
+
+    // 每次切換月份都重新讀取 K9DB V1，確保跨頁新增資料可以立即反映。
+    db = getCalendarDB();
+    shiftData = getCalendarShiftData();
+
+    buildEvents();
+
+    currentDate.setMonth(
+        currentDate.getMonth() + step
+    );
+
+    /* =========================
+       修正：切換月份時清除右側
+       上一個月份的勤務卡片
+       ========================= */
+
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth() + 1;
+
+    const detailTitle = document.getElementById("detailTitle");
+    const dayRecords = document.getElementById("dayRecords");
+
+    if(detailTitle){
+        detailTitle.innerText = "請選擇日期";
+    }
+
+    if(dayRecords){
+        dayRecords.innerHTML = `
+            <div style="
+                padding:40px 20px;
+                text-align:center;
+                color:#94a3b8;
+                font-size:14px;
+            ">
+                請點選 ${year} 年 ${month} 月的日期
+            </div>
+        `;
+    }
+
+    renderCalendar();
+    renderMonthSummary();
+    renderAreaRewardRatio();
+
+}
+         
+/* =========================================================
+   K9 Calendar 初始化
+   ========================================================= */
+
+/*
+ * 每次開啟 Calendar 時重新從 K9DB V1 取得資料。
+ *
+ * 避免 index.html 剛新增 DTR 後，
+ * Calendar 還拿到舊的記憶體資料。
+ */
+db =
+    getCalendarDB();
+
+shiftData =
+    getCalendarShiftData();
+
+buildEvents();
+
+renderCalendar();
+
+renderMonthSummary();
+
+renderAreaRewardRatio();
+      </script>
+   </body>
+</html>
